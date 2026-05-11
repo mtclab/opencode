@@ -27,7 +27,7 @@ export function deriveSubagentSessionPermission(input: {
   const canTodo = input.subagent.permission.some((rule) => rule.permission === "todowrite")
   const parentAgentDenies = input.parentAgent?.permission.filter((rule) => rule.action === "deny") ?? []
   const parentSessionMcpAllows = input.parentSessionPermission.filter(
-    (rule) => rule.action === "allow" && rule.permission.includes("_"),
+    (rule) => rule.action === "allow" && (rule.permission.includes("_") || rule.permission === "*"),
   )
   return [
     ...parentAgentDenies,
