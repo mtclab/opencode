@@ -11,22 +11,17 @@ import { app, BrowserWindow } from "electron"
 
 import contextMenu from "electron-context-menu"
 
-import type { InitStep, ServerReadyData, SqliteMigrationProgress, WslConfig } from "../preload/types"
+import type { InitStep, ServerReadyData, SqliteMigrationProgress } from "../preload/types"
 import { checkAppExists, resolveAppPath, wslPath } from "./apps"
 import { CHANNEL, UPDATER_ENABLED } from "./constants"
 import { registerIpcHandlers, sendDeepLinks, sendMenuCommand, sendSqliteMigrationProgress } from "./ipc"
 import { initLogging } from "./logging"
 import { parseMarkdown } from "./markdown"
+import { migrate } from "./migrate"
 import { createMenu } from "./menu"
-import {
-  getDefaultServerUrl,
-  getWslConfig,
-  preferAppEnv,
-  setDefaultServerUrl,
-  setWslConfig,
-  spawnLocalServer,
-  type SidecarListener,
-} from "./server"
+import { checkUpdate, checkForUpdates, installUpdate, setupAutoUpdater } from "./updater"
+import { preferAppEnv, getDefaultServerUrl, setDefaultServerUrl, spawnLocalServer, spawnWslSidecar, type SidecarListener } from "./server"
+import { createWslServersController } from "./wsl-servers"
 import {
   createLoadingWindow,
   createMainWindow,
@@ -34,8 +29,6 @@ import {
   setBackgroundColor,
   setDockIcon,
 } from "./windows"
-import { migrate } from "./migrate"
-import { checkUpdate, checkForUpdates, installUpdate, setupAutoUpdater } from "./updater"
 import { Deferred, Effect, Fiber } from "effect"
 
 const APP_NAMES: Record<string, string> = {
@@ -61,7 +54,6 @@ const pendingDeepLinks: string[] = []
 
 function useEnvProxy() {
   try {
-    // Electron 41.2 runs Node 24.14.1; latest @types/node@24 is 24.12.2.
     ;(http as any).setGlobalProxyFromEnv()
   } catch (error) {
     logger.warn("failed to load proxy environment", error)
@@ -110,7 +102,6 @@ function ensureLoopbackNoProxy() {
 const main = Effect.gen(function* () {
   contextMenu({ showSaveImageAs: true, showLookUpSelection: false, showSearchWithGoogle: false })
 
-  // on macOS apps run in `/` which can cause issues with ripgrep
   try {
     process.chdir(homedir())
   } catch {}
@@ -166,6 +157,25 @@ const main = Effect.gen(function* () {
 
   preferAppEnv(app.getPath("userData"))
 
+  const wslServers = createWslServersController(
+    app.getVersion(),
+    async (distro) => {
+      logger.log("spawning wsl sidecar", { distro })
+      return spawnWslSidecar(distro, {
+        onLine: (line) => logger.log("wsl sidecar", { distro, stream: line.stream, text: line.text }),
+      })
+    },
+    {
+      log: (message, meta) => logger.log(message, meta),
+      error: (message, meta) => logger.error(message, meta),
+    },
+  )
+
+  const stopServers = async () => {
+    await killSidecar()
+    wslServers.stopAll()
+  }
+
   app.on("second-instance", (_event: Event, argv: string[]) => {
     const urls = argv.filter((arg: string) => arg.startsWith("opencode://"))
     if (urls.length) {
@@ -186,15 +196,17 @@ const main = Effect.gen(function* () {
 
   app.on("before-quit", () => {
     void killSidecar()
+    wslServers.stopAll()
   })
 
   app.on("will-quit", () => {
     void killSidecar()
+    wslServers.stopAll()
   })
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      void killSidecar().finally(() => app.exit(0))
+      void stopServers().finally(() => app.exit(0))
     })
   }
 
@@ -203,6 +215,12 @@ const main = Effect.gen(function* () {
 
   registerIpcHandlers({
     killSidecar: () => killSidecar(),
+    relaunch: () => {
+      void stopServers().finally(() => {
+        app.relaunch()
+        app.exit(0)
+      })
+    },
     awaitInitialization: Effect.fnUntraced(
       function* (sendStep) {
         sendStep(initStep)
@@ -219,22 +237,33 @@ const main = Effect.gen(function* () {
       },
       (e) => Effect.runPromise(e),
     ),
+    getWslServersState: () => wslServers.getState(),
+    onWslServersEvent: (listener) => wslServers.subscribe(listener),
+    wslServersProbeRuntime: () => wslServers.probeRuntime(),
+    wslServersRefreshDistros: () => wslServers.refreshDistros(),
+    wslServersInstallWsl: () => wslServers.installWsl(),
+    wslServersInstallDistro: (name) => wslServers.installDistro(name),
+    wslServersProbeDistro: (name) => wslServers.probeDistro(name),
+    wslServersProbeOpencode: (name) => wslServers.probeOpencode(name),
+    wslServersInstallOpencode: (name) => wslServers.installOpencode(name),
+    wslServersOpenTerminal: (name) => wslServers.openTerminal(name),
+    wslServersAddServer: (distro) => wslServers.addServer(distro),
+    wslServersRemoveServer: (id) => wslServers.removeServer(id),
+    wslServersStartServer: (id) => wslServers.startServer(id),
     getWindowConfig: () => ({ updaterEnabled: UPDATER_ENABLED }),
     consumeInitialDeepLinks: () => pendingDeepLinks.splice(0),
     getDefaultServerUrl: () => getDefaultServerUrl(),
     setDefaultServerUrl: (url) => setDefaultServerUrl(url),
-    getWslConfig: () => Promise.resolve(getWslConfig()),
-    setWslConfig: (config: WslConfig) => setWslConfig(config),
     getDisplayBackend: async () => null,
     setDisplayBackend: async () => undefined,
     parseMarkdown: async (markdown) => parseMarkdown(markdown),
     checkAppExists: (appName) => checkAppExists(appName),
-    wslPath: async (path, mode) => wslPath(path, mode),
+    wslPath: async (path, mode, distro) => wslPath(path, mode, distro),
     resolveAppPath: async (appName) => resolveAppPath(appName),
     loadingWindowComplete: () => Deferred.doneUnsafe(loadingComplete, Effect.void),
-    runUpdater: async (alertOnFail) => checkForUpdates(alertOnFail, killSidecar),
+    runUpdater: async (alertOnFail) => checkForUpdates(alertOnFail, stopServers),
     checkUpdate: async () => checkUpdate(),
-    installUpdate: async () => installUpdate(killSidecar),
+    installUpdate: async () => installUpdate(stopServers),
     setBackgroundColor: (color) => setBackgroundColor(color),
   })
 
@@ -318,6 +347,8 @@ const main = Effect.gen(function* () {
       password,
     })
 
+    void wslServers.initialize().catch((error) => logger.error("wsl server initialization failed", error))
+
     yield* Effect.promise(() => health.wait).pipe(
       Effect.timeout("30 seconds"),
       Effect.catch((e) =>
@@ -353,11 +384,11 @@ const main = Effect.gen(function* () {
     createMenu({
       trigger: (id) => mainWindow && sendMenuCommand(mainWindow, id),
       checkForUpdates: () => {
-        void checkForUpdates(true, killSidecar)
+        void checkForUpdates(true, stopServers)
       },
       reload: () => mainWindow?.reload(),
       relaunch: () => {
-        void killSidecar().finally(() => {
+        void stopServers().finally(() => {
           app.relaunch()
           app.exit(0)
         })
