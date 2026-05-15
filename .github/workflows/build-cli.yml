@@ -23,7 +23,7 @@ jobs:
         run: |
           ./packages/opencode/script/build.ts
         env:
-          OPENCODE_VERSION: "1.14.48"
+          OPENCODE_VERSION: "1.15.0"
           OPENCODE_RELEASE: ""
           GH_REPO: mtclab/opencode
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
