@@ -1,10 +1,15 @@
 name: build-cli
 
 on:
+  push:
+    branches: [dev]
+    paths:
+      - "packages/opencode/**"
+      - ".github/workflows/build-cli.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
 jobs:
@@ -33,3 +38,21 @@ jobs:
           name: opencode-cli
           path: |
             packages/opencode/dist/opencode-linux*
+
+      - name: Package release tarballs
+        run: |
+          mkdir -p /tmp/release
+          for dir in packages/opencode/dist/opencode-linux-*; do
+            name=$(basename "$dir")
+            tar czf "/tmp/release/${name}.tar.gz" -C "$dir" .
+          done
+
+      - name: Update latest release
+        run: |
+          gh release delete latest --repo $GH_REPO --yes || true
+          gh release create latest --repo $GH_REPO \
+            --title "Latest ($OPENCODE_VERSION)" \
+            --notes "Auto-built from dev branch. Currently v$OPENCODE_VERSION + MCP subagent permission patch." \
+            /tmp/release/*.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
