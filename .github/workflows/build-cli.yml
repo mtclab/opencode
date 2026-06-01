@@ -28,7 +28,7 @@ jobs:
         run: |
           ./packages/opencode/script/build.ts
         env:
-          OPENCODE_VERSION: "1.15.11"
+          OPENCODE_VERSION: "1.15.13"
           OPENCODE_RELEASE: ""
           GH_REPO: mtclab/opencode
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -52,9 +52,9 @@ jobs:
           gh release delete latest --repo "$GH_REPO" --yes || true
           gh release create latest --repo "$GH_REPO" \
             --title "Latest ($OPENCODE_VERSION)" \
-            --notes "Auto-built from dev branch. Currently v$OPENCODE_VERSION + MCP subagent permission patch." \
+            --notes "Auto-built from dev branch. v$OPENCODE_VERSION + MCP subagent permission patch." \
             /tmp/release/*.tar.gz
         env:
           GH_REPO: mtclab/opencode
-          OPENCODE_VERSION: "1.15.11"
+          OPENCODE_VERSION: "1.15.13"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
