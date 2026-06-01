@@ -5,6 +5,10 @@ on:
     branches: [dev]
     paths:
       - "packages/opencode/**"
+      - "packages/ui/**"
+      - "packages/app/**"
+      - "packages/core/**"
+      - "packages/sdk/**"
       - ".github/workflows/build-cli.yml"
   workflow_dispatch:
 
